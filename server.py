@@ -1,9 +1,10 @@
-import http.server, json, os, uuid, unicodedata, qrcode, qrcode.image.svg
+import http.server, json, os, uuid, unicodedata, qrcode
 from urllib.parse import parse_qs, quote
 from io import BytesIO
 from fpdf import FPDF
 
 PORTA = 8000
+BASE = "http://localhost:8000"
 PASTA = os.path.dirname(os.path.abspath(__file__))
 DOCS = os.path.join(PASTA, "docs.json")
 
@@ -41,7 +42,7 @@ FORM = """<html><head><meta charset='utf-8'><meta name='viewport' content='width
 <h4>Nome do cobrado</h4><input name='nome_cliente'>
 <h4>Contato (opcional)</h4><input name='contato'>
 <h4>Dados extras (placa/CPF/pedido)</h4><input name='extras'>
-<h4>Especificação</h4><textarea name='especificacao'></textarea>
+<h4>Especificação / mensagem da cobrança</h4><textarea name='especificacao'></textarea>
 <h4>Data</h4><input name='data_doc'>
 <h4>Nº doc/OS</h4><input name='num_doc'>
 <h4>Total</h4><input name='total' inputmode='decimal'>
@@ -52,32 +53,36 @@ FORM = """<html><head><meta charset='utf-8'><meta name='viewport' content='width
 <button>GERAR LINK DO DOCUMENTO</button>
 </form></body></html>"""
 
+GERADO = """<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Gerado!</title><style>""" + CSS + """</style></head><body>
+<img class='banner' src='/img/bannerforms.png'>
+<div class='card'><h3>Documento gerado!</h3>
+<a href='/doc/__ID__'><button>ABRIR DOCUMENTO</button></a>
+<a href='https://wa.me/?text=__MSGWA__'><button>ENVIAR POR WHATSAPP</button></a>
+<a href='mailto:?subject=Cobranca&body=__MSGWA__'><button>ENVIAR POR E-MAIL</button></a>
+<h5>Link do cobrado: __BASE__/doc/__ID__</h5>
+</div></body></html>"""
+
 DOC = """<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Documento</title><style>""" + CSS + """</style></head><body>
 <img class='banner' src='/img/pdfbanner.png'>
 <h2>__EMPRESA__</h2>
 <h5>__ENDERECO__ • __WHATSAPP__</h5>
 <div class='card'>
-<p>Olá, <b>__NOME__</b>! Seu documento já está pronto ✅</p>
-<h5>__ESPEC__</h5><h5>__EXTRAS__</h5>
-<h5>Data: __DATA__ • Doc/OS: __NUM__</h5>
-<h5>Vencimento: __VENC__</h5>
+<p>Olá, <b>__NOME__</b>!</p>
+<p>__ESPEC__</p>
+<h5>__EXTRAS__</h5>
+<h5>Data: __DATA__ • Doc/OS: __NUM__ • Vencimento: __VENC__</h5>
+<h5>Total: R$ __TOTAL__ | Desconto: R$ __DESC__ | Adiantamento: R$ __ADIA__</h5>
 <p class='saldo'>Saldo: R$ __SALDO__</p>
 </div>
 <div class='card'><h3>Pague com Pix</h3>
 <pre id='pix'>__PIX__</pre>
 <img src='/qr/__ID__' style='width:70%'>
 <button onclick="copiar('pix')">COPIAR PIX</button>
-<button onclick="copiar('msg')">COPIAR MENSAGEM</button>
-</div>
-<div class='card'><h3>Outras opções</h3>
 <a href='/pdf/__ID__'><button>BAIXAR PDF</button></a>
-<a href='https://wa.me/?text=__MSGWA__'><button>ENVIAR POR WHATSAPP</button></a>
-<a href='mailto:?subject=Documento&body=__MSGWA__'><button>ENVIAR POR E-MAIL</button></a>
-__CARDBTN__
 </div>
-<textarea id='msg' style='display:none'>__MSG__</textarea>
-<script>function copiar(q){var t=document.getElementById(q);navigator.clipboard.writeText(t.value||t.innerText);alert('Copiado!');}</script>
+<script>function copiar(q){var t=document.getElementById(q);navigator.clipboard.writeText(t.innerText);alert('Copiado!');}</script>
 </body></html>"""
 
 def esc(t): return t.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -107,30 +112,39 @@ def carregar():
 def salvar(d): json.dump(d, open(DOCS,"w"))
 
 def montar_doc(d):
-    msg = f"Olá, {d.get('nome_cliente','')}! Seu documento já está pronto ✅\nSaldo: R$ {d['saldo']}\nPix copia-e-cola:\n{d['pix']}\nObrigado!"
-    wa = quote(msg)
-    card = f"<a href='{d['cartao_link']}'><button>PAGAR COM CARTÃO</button></a>" if d.get("cartao_link") else ""
     h = DOC
-    vals = {"EMPRESA":d.get("nome_empresa",""),"ENDERECO":d.get("endereco",""),"WHATSAPP":d.get("whatsapp",""),"NOME":d.get("nome_cliente",""),"ESPEC":d.get("especificacao",""),"EXTRAS":d.get("extras",""),"DATA":d.get("data_doc",""),"NUM":d.get("num_doc",""),"VENC":d.get("vencimento","") or "sem vencimento","SALDO":d["saldo"],"PIX":d["pix"],"ID":d["id"],"MSGWA":wa,"MSG":msg,"CARDBTN":card}
+    vals = {"EMPRESA":d.get("nome_empresa",""),"ENDERECO":d.get("endereco",""),"WHATSAPP":d.get("whatsapp",""),"NOME":d.get("nome_cliente",""),"ESPEC":d.get("especificacao",""),"EXTRAS":d.get("extras",""),"DATA":d.get("data_doc",""),"NUM":d.get("num_doc",""),"VENC":d.get("vencimento","") or "sem vencimento","SALDO":d["saldo"],"TOTAL":d.get("total","0"),"DESC":d.get("desconto","0"),"ADIA":d.get("adiantamento","0"),"PIX":d["pix"],"ID":d["id"]}
     for k,v in vals.items(): h = h.replace("__"+k+"__", esc(str(v)))
     return h
 
 def gerar_pdf(d):
-    pdf = FPDF(); pdf.add_page()
-    try: pdf.image(os.path.join(PASTA,"pdfbanner.png"), x=0, y=0, w=210)
-    except Exception: pass
-    pdf.set_y(85)
-    pdf.set_font("Helvetica","B",14); pdf.set_text_color(13,27,62)
-    pdf.cell(0,8,d.get("nome_empresa",""),ln=True)
-    pdf.set_font("Helvetica","",10); pdf.set_text_color(90,90,90)
-    for t in [d.get("endereco",""), d.get("whatsapp","")]:
-        if t: pdf.cell(0,6,t,ln=True)
-    pdf.ln(4); pdf.set_text_color(0,0,0)
-    for t in [f"Cliente: {d.get('nome_cliente','')}", f"Data: {d.get('data_doc','')}   Doc/OS: {d.get('num_doc','')}", f"Especificacao: {d.get('especificacao','')}", f"Extras: {d.get('extras','')}", f"Vencimento: {d.get('vencimento','') or '---'}", f"Total: {d.get('total','0')}  Desconto: {d.get('desconto','0')}  Adiantamento: {d.get('adiantamento','0')}"]:
-        pdf.multi_cell(0,6,t)
-    pdf.ln(4); pdf.set_font("Helvetica","B",16); pdf.set_text_color(212,175,55)
-    pdf.cell(0,10,f"SALDO: R$ {d['saldo']}",ln=True)
-    return pdf.output()
+    try:
+        pdf = FPDF(); pdf.add_page()
+        try: pdf.image(os.path.join(PASTA,"pdfbanner.png"), x=0, y=0, w=210)
+        except Exception: pass
+        pdf.set_y(80)
+        pdf.set_font("Helvetica","B",14); pdf.set_text_color(13,27,62)
+        pdf.cell(0,8,d.get("nome_empresa","")); pdf.ln()
+        pdf.set_font("Helvetica","",9); pdf.set_text_color(90,90,90)
+        for t in [d.get("endereco",""), d.get("whatsapp","")]:
+            if t: pdf.cell(0,5,t); pdf.ln()
+        pdf.ln(3); pdf.set_text_color(0,0,0); pdf.set_font("Helvetica","",11)
+        for t in [f"Cliente: {d.get('nome_cliente','')}", f"{d.get('especificacao','')}", f"{d.get('extras','')}", f"Data: {d.get('data_doc','')}   Doc/OS: {d.get('num_doc','')}   Venc.: {d.get('vencimento','') or '---'}", f"Total: {d.get('total','0')}  Desconto: {d.get('desconto','0')}  Adiantamento: {d.get('adiantamento','0')}"]:
+            if t.strip(): pdf.multi_cell(0,6,t)
+        pdf.ln(3); pdf.set_font("Helvetica","B",20); pdf.set_text_color(180,140,40)
+        pdf.cell(0,10,f"SALDO: R$ {d['saldo']}"); pdf.ln()
+        pdf.ln(3)
+        buf = BytesIO(); qrcode.make(d["pix"]).save(buf,"PNG"); buf.seek(0)
+        pdf.image(buf, x=75, w=60)
+        pdf.ln(4); pdf.set_font("Courier","",7); pdf.set_text_color(0,0,0)
+        pdf.multi_cell(0,4,d["pix"])
+        pdf.ln(2); pdf.set_font("Helvetica","",9); pdf.set_text_color(0,0,200)
+        pdf.cell(0,5,f"Acesse: {BASE}/doc/{d['id']}"); pdf.ln()
+        return pdf.output()
+    except Exception:
+        pdf = FPDF(); pdf.add_page(); pdf.set_font("Helvetica","",10)
+        pdf.multi_cell(0,6,f"{d.get('nome_empresa','')}\nCliente: {d.get('nome_cliente','')}\n{d.get('especificacao','')}\nSALDO: R$ {d['saldo']}\nPix:\n{d['pix']}\nAcesse: {BASE}/doc/{d['id']}")
+        return pdf.output()
 
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
@@ -173,7 +187,10 @@ class H(http.server.BaseHTTPRequestHandler):
         uid = uuid.uuid4().hex[:8]
         doc = dict(f); doc.update({"saldo":f"{saldo:.2f}","pix":payload,"id":uid})
         db = carregar(); db[uid] = doc; salvar(db)
-        self.out(200, f"<html><body style='background:#0A0F2C;color:#fff;text-align:center;font-family:Arial'><h3>Documento gerado!</h3><a href='/doc/{uid}'>ABRIR DOCUMENTO</a><h5>Guarde o link: /doc/{uid}</h5></body></html>")
+        msg = f"Olá, {f.get('nome_cliente','')}! {f.get('nome_empresa','')} enviou sua cobrança ✅\nSaldo: R$ {saldo:.2f}\nVeja e pague aqui: {BASE}/doc/{uid}"
+        wa = quote(msg)
+        h = GERADO.replace("__ID__",uid).replace("__MSGWA__",wa).replace("__BASE__",BASE)
+        self.out(200,h)
 
 if __name__ == "__main__":
     s = http.server.ThreadingHTTPServer(("0.0.0.0",PORTA),H)
