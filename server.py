@@ -4,9 +4,10 @@ from io import BytesIO
 from fpdf import FPDF
 
 PORTA = 8000
-BASE = "http://localhost:8000"
 PASTA = os.path.dirname(os.path.abspath(__file__))
 DOCS = os.path.join(PASTA, "docs.json")
+IMG_DIR = os.path.join(PASTA, "img")
+os.makedirs(IMG_DIR, exist_ok=True)
 
 CSS = """
 body{background:#0A0F2C;color:#E8E8E8;font-family:Arial;margin:0;padding:14px}
@@ -30,13 +31,11 @@ FORM = """<html><head><meta charset='utf-8'><meta name='viewport' content='width
 <form method='POST' action='/gerar'>
 <div class='card'><h3>Dados da empresa</h3>
 <h4>Nome da empresa</h4><input name='nome_empresa'>
-<h4>Logo (link, opcional)</h4><input name='logo_url'>
 <h4>Endereço</h4><input name='endereco'>
 <h4>Contato / WhatsApp</h4><input name='whatsapp'>
 <h4>Chave Pix</h4><input name='pix_chave'>
 <h4>Titular</h4><input name='pix_titular'>
 <h4>Cidade</h4><input name='pix_cidade'>
-<h4>Link do cartão (opcional)</h4><input name='cartao_link'>
 </div>
 <div class='card'><h3>Dados do cliente</h3>
 <h4>Nome do cobrado</h4><input name='nome_cliente'>
@@ -45,7 +44,7 @@ FORM = """<html><head><meta charset='utf-8'><meta name='viewport' content='width
 <h4>Especificação / mensagem da cobrança</h4><textarea name='especificacao'></textarea>
 <h4>Data</h4><input name='data_doc'>
 <h4>Nº doc/OS</h4><input name='num_doc'>
-<h4>Total</h4><input name='total' inputmode='decimal'>
+<h4>Total (obrigatório)</h4><input name='total' inputmode='decimal' required>
 <h4>Desconto</h4><input name='desconto'>
 <h4>Adiantamento</h4><input name='adiantamento'>
 <h4>Vencimento (opcional)</h4><input name='vencimento'>
@@ -57,10 +56,10 @@ GERADO = """<html><head><meta charset='utf-8'><meta name='viewport' content='wid
 <title>Gerado!</title><style>""" + CSS + """</style></head><body>
 <img class='banner' src='/img/bannerforms.png'>
 <div class='card'><h3>Documento gerado!</h3>
-<a href='/doc/__ID__'><button>ABRIR DOCUMENTO</button></a>
+<a href='/doc/__ID__'><button>VER DOCUMENTO</button></a>
 <a href='https://wa.me/?text=__MSGWA__'><button>ENVIAR POR WHATSAPP</button></a>
 <a href='mailto:?subject=Cobranca&body=__MSGWA__'><button>ENVIAR POR E-MAIL</button></a>
-<h5>Link do cobrado: __BASE__/doc/__ID__</h5>
+<h5>Link do cobrado (copie): __BASE__/doc/__ID__</h5>
 </div></body></html>"""
 
 DOC = """<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
@@ -85,9 +84,9 @@ DOC = """<html><head><meta charset='utf-8'><meta name='viewport' content='width=
 <script>function copiar(q){var t=document.getElementById(q);navigator.clipboard.writeText(t.innerText);alert('Copiado!');}</script>
 </body></html>"""
 
-def esc(t): return t.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+def esc(t): return str(t).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 def limpar(t,n):
-    t = unicodedata.normalize("NFKD", t.upper())
+    t = unicodedata.normalize("NFKD", str(t).upper())
     t = "".join(c for c in t if not unicodedata.combining(c))
     return t[:n]
 def tlv(tag,val): return tag + f"{len(val):02d}" + val
@@ -106,45 +105,55 @@ def pix_payload(chave,nome,cidade,valor):
     p += tlv("58","BR") + tlv("59",limpar(nome,25)) + tlv("60",limpar(cidade,15))
     p += tlv("62", tlv("05","***")) + "6304"
     return p + crc16(p)
+def brl(v):
+    try: return f"{float(str(v).replace(',','.')):,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    except Exception: return "0,00"
 def carregar():
     if os.path.exists(DOCS): return json.load(open(DOCS))
     return {}
 def salvar(d): json.dump(d, open(DOCS,"w"))
 
-def montar_doc(d):
+def get_base(headers):
+    host = headers.get("Host","localhost:8000")
+    proto = headers.get("X-Forwarded-Proto","http")
+    return f"{proto}://{host}"
+
+def montar_doc(d,base):
     h = DOC
-    vals = {"EMPRESA":d.get("nome_empresa",""),"ENDERECO":d.get("endereco",""),"WHATSAPP":d.get("whatsapp",""),"NOME":d.get("nome_cliente",""),"ESPEC":d.get("especificacao",""),"EXTRAS":d.get("extras",""),"DATA":d.get("data_doc",""),"NUM":d.get("num_doc",""),"VENC":d.get("vencimento","") or "sem vencimento","SALDO":d["saldo"],"TOTAL":d.get("total","0"),"DESC":d.get("desconto","0"),"ADIA":d.get("adiantamento","0"),"PIX":d["pix"],"ID":d["id"]}
-    for k,v in vals.items(): h = h.replace("__"+k+"__", esc(str(v)))
+    vals = {"EMPRESA":d.get("nome_empresa",""),"ENDERECO":d.get("endereco",""),"WHATSAPP":d.get("whatsapp",""),"NOME":d.get("nome_cliente",""),"ESPEC":d.get("especificacao",""),"EXTRAS":d.get("extras",""),"DATA":d.get("data_doc",""),"NUM":d.get("num_doc",""),"VENC":d.get("vencimento","") or "sem vencimento","SALDO":brl(d["saldo"]),"TOTAL":brl(d.get("total","0")),"DESC":brl(d.get("desconto","0")),"ADIA":brl(d.get("adiantamento","0")),"PIX":d["pix"],"ID":d["id"]}
+    for k,v in vals.items(): h = h.replace("__"+k+"__", esc(v))
     return h
 
-def gerar_pdf(d):
-    try:
-        pdf = FPDF(); pdf.add_page()
-        try: pdf.image(os.path.join(PASTA,"pdfbanner.png"), x=0, y=0, w=210)
-        except Exception: pass
-        pdf.set_y(80)
-        pdf.set_font("Helvetica","B",14); pdf.set_text_color(13,27,62)
-        pdf.cell(0,8,d.get("nome_empresa","")); pdf.ln()
-        pdf.set_font("Helvetica","",9); pdf.set_text_color(90,90,90)
-        for t in [d.get("endereco",""), d.get("whatsapp","")]:
-            if t: pdf.cell(0,5,t); pdf.ln()
-        pdf.ln(3); pdf.set_text_color(0,0,0); pdf.set_font("Helvetica","",11)
-        for t in [f"Cliente: {d.get('nome_cliente','')}", f"{d.get('especificacao','')}", f"{d.get('extras','')}", f"Data: {d.get('data_doc','')}   Doc/OS: {d.get('num_doc','')}   Venc.: {d.get('vencimento','') or '---'}", f"Total: {d.get('total','0')}  Desconto: {d.get('desconto','0')}  Adiantamento: {d.get('adiantamento','0')}"]:
-            if t.strip(): pdf.multi_cell(0,6,t)
-        pdf.ln(3); pdf.set_font("Helvetica","B",20); pdf.set_text_color(180,140,40)
-        pdf.cell(0,10,f"SALDO: R$ {d['saldo']}"); pdf.ln()
-        pdf.ln(3)
-        buf = BytesIO(); qrcode.make(d["pix"]).save(buf,"PNG"); buf.seek(0)
-        pdf.image(buf, x=75, w=60)
-        pdf.ln(4); pdf.set_font("Courier","",7); pdf.set_text_color(0,0,0)
-        pdf.multi_cell(0,4,d["pix"])
-        pdf.ln(2); pdf.set_font("Helvetica","",9); pdf.set_text_color(0,0,200)
-        pdf.cell(0,5,f"Acesse: {BASE}/doc/{d['id']}"); pdf.ln()
-        return pdf.output()
-    except Exception:
-        pdf = FPDF(); pdf.add_page(); pdf.set_font("Helvetica","",10)
-        pdf.multi_cell(0,6,f"{d.get('nome_empresa','')}\nCliente: {d.get('nome_cliente','')}\n{d.get('especificacao','')}\nSALDO: R$ {d['saldo']}\nPix:\n{d['pix']}\nAcesse: {BASE}/doc/{d['id']}")
-        return pdf.output()
+def gerar_pdf(d,base):
+    pdf = FPDF(); pdf.add_page()
+    try: pdf.image(os.path.join(PASTA,"pdfbanner.png"), x=0, y=0, w=210)
+    except Exception: pass
+    pdf.set_y(80)
+    pdf.set_font("Helvetica","B",14); pdf.set_text_color(13,27,62)
+    pdf.cell(0,8,d.get("nome_empresa","")); pdf.ln()
+    pdf.set_font("Helvetica","",9); pdf.set_text_color(90,90,90)
+    for t in [d.get("endereco",""), d.get("whatsapp","")]:
+        if t: pdf.cell(0,5,t); pdf.ln()
+    pdf.ln(3); pdf.set_text_color(0,0,0); pdf.set_font("Helvetica","",11)
+    pdf.multi_cell(0,6,f"Cliente: {d.get('nome_cliente','')}")
+    espec = d.get("especificacao","")
+    if espec: pdf.multi_cell(0,6,espec)
+    extras = d.get("extras","")
+    if extras: pdf.multi_cell(0,6,extras)
+    pdf.multi_cell(0,6,f"Data: {d.get('data_doc','')}   Doc/OS: {d.get('num_doc','')}   Venc.: {d.get('vencimento','') or '---'}")
+    pdf.multi_cell(0,6,f"Total: R$ {brl(d.get('total','0'))}   Desconto: R$ {brl(d.get('desconto','0'))}   Adiantamento: R$ {brl(d.get('adiantamento','0'))}")
+    pdf.ln(3); pdf.set_font("Helvetica","B",22); pdf.set_text_color(180,140,40)
+    pdf.cell(0,12,f"SALDO: R$ {brl(d['saldo'])}"); pdf.ln()
+    qr_path = os.path.join(IMG_DIR, f"qr_{d['id']}.png")
+    qrcode.make(d["pix"]).save(qr_path)
+    pdf.ln(2); pdf.image(qr_path, x=75, w=60)
+    pdf.ln(3); pdf.set_font("Courier","",7); pdf.set_text_color(0,0,0)
+    pdf.multi_cell(0,3.5,d["pix"])
+    pdf.ln(2); pdf.set_font("Helvetica","",10); pdf.set_text_color(0,0,200)
+    link_text = f"Acesse: {base}/doc/{d['id']}"
+    x,y = pdf.get_x(),pdf.get_y()
+    pdf.cell(0,6,link_text,link=f"{base}/doc/{d['id']}"); pdf.ln()
+    return pdf.output()
 
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
@@ -156,23 +165,31 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
     def do_GET(self):
+        base = get_base(self.headers)
         if self.path == "/": self.out(200,FORM)
         elif self.path.startswith("/img/"):
-            self.out(200, open(os.path.join(PASTA,self.path.split("/")[-1]),"rb").read(), "image/png")
+            arq = os.path.join(PASTA, self.path.split("?")[0].lstrip("/"))
+            try: self.out(200, open(arq,"rb").read(), "image/png")
+            except Exception: self.out(404,"nao achou")
         elif self.path.startswith("/qr/"):
-            d = carregar().get(self.path.split("/")[-1])
+            d = carregar().get(self.path.split("/")[-1].split("?")[0])
             if not d: return self.out(404,"nao achou")
+            from io import BytesIO
+            import qrcode.image.svg
             buf = BytesIO()
             qrcode.make(d["pix"], image_factory=qrcode.image.svg.SvgPathImage).save(buf)
             self.out(200, buf.getvalue(), "image/svg+xml")
         elif self.path.startswith("/pdf/"):
-            d = carregar().get(self.path.split("/")[-1])
+            d = carregar().get(self.path.split("/")[-1].split("?")[0])
             if not d: return self.out(404,"nao achou")
-            self.out(200, gerar_pdf(d), "application/pdf")
+            try:
+                self.out(200, gerar_pdf(d,base), "application/pdf")
+            except Exception as e:
+                self.out(500, f"<html><body>Erro: {e}</body></html>")
         elif self.path.startswith("/doc/"):
-            d = carregar().get(self.path.split("/")[-1])
+            d = carregar().get(self.path.split("/")[-1].split("?")[0])
             if not d: return self.out(404,"nao achou")
-            self.out(200, montar_doc(d))
+            self.out(200, montar_doc(d,base))
         else: self.out(404,"nao achou")
     def do_POST(self):
         n = int(self.headers.get("Content-Length",0))
@@ -180,19 +197,23 @@ class H(http.server.BaseHTTPRequestHandler):
         def num(x):
             try: return float(str(f.get(x,"0")).replace(",","."))
             except Exception: return 0.0
-        saldo = num("total") - num("desconto") - num("adiantamento")
+        total = num("total")
+        if total <= 0:
+            return self.out(400,"<html><body><h3>Total é obrigatório.</h3><a href='/'>voltar</a></body></html>")
+        saldo = total - num("desconto") - num("adiantamento")
         chave = f.get("pix_chave","")
         if chave and chave.isdigit(): chave = "+55" + chave
         payload = pix_payload(chave, f.get("pix_titular","") or f.get("nome_empresa","RECEBEDOR"), f.get("pix_cidade","CIDADE") or "CIDADE", f"{saldo:.2f}")
         uid = uuid.uuid4().hex[:8]
         doc = dict(f); doc.update({"saldo":f"{saldo:.2f}","pix":payload,"id":uid})
         db = carregar(); db[uid] = doc; salvar(db)
-        msg = f"Olá, {f.get('nome_cliente','')}! {f.get('nome_empresa','')} enviou sua cobrança ✅\nSaldo: R$ {saldo:.2f}\nVeja e pague aqui: {BASE}/doc/{uid}"
+        base = get_base(self.headers)
+        msg = f"Olá, {f.get('nome_cliente','')}! {f.get('nome_empresa','')} enviou sua cobrança ✅\nSaldo: R$ {brl(saldo)}\nVeja e pague aqui: {base}/doc/{uid}"
         wa = quote(msg)
-        h = GERADO.replace("__ID__",uid).replace("__MSGWA__",wa).replace("__BASE__",BASE)
+        h = GERADO.replace("__ID__",uid).replace("__MSGWA__",wa).replace("__BASE__",base)
         self.out(200,h)
 
 if __name__ == "__main__":
     s = http.server.ThreadingHTTPServer(("0.0.0.0",PORTA),H)
-    print("Billing HuB no ar! Abra no navegador: http://localhost:8000")
+    print(f"Billing HuB v3 no ar em http://localhost:{PORTA}")
     s.serve_forever()
